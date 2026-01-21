@@ -13,26 +13,27 @@ export default function LoginPage() {
   const router = useRouter()
   const supabase = createClient()
 
-  const handleAuth = async (e: React.FormEvent) => {
+const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault()
     setLoading(true)
     setMessage(null)
 
-    // 1. Попытка входа
+    // 1. Сначала ВСЕГДА пробуем войти
     const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
       email,
       password,
     })
 
     if (!signInError) {
-      // Успешный вход
+      // Если вошли — улетаем на главную
       router.push('/')
       router.refresh()
       return
     }
 
-    // 2. Если пользователь не найден (Invalid login credentials), пробуем регистрацию
-    if (signInError.message.includes("Invalid login credentials") || signInError.status === 400) {
+    // 2. Если ошибка входа — проверяем, нужно ли регистрировать
+    // Если ошибка говорит, что данных нет в базе — регистрируем
+    if (signInError.message.includes("Invalid login credentials")) {
       const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
         email,
         password,
@@ -46,18 +47,20 @@ export default function LoginPage() {
       })
 
       if (signUpError) {
+        // Если и тут ошибка (например, пароль слишком короткий)
         setMessage({ type: 'error', text: 'Ошибка: ' + signUpError.message })
-      } else if (signUpData.user && signUpData.session) {
-        // Залогинились сразу после регистрации
-        router.push('/')
-        router.refresh()
       } else {
-        // Если в Supabase включено подтверждение по почте
-        setMessage({ type: 'success', text: 'Аккаунт создан! Проверьте почту для подтверждения.' })
+        // Если регистрация прошла успешно
+        if (signUpData.session) {
+           router.push('/')
+           router.refresh()
+        } else {
+           setMessage({ type: 'success', text: 'Аккаунт создан! Попробуйте войти.' })
+        }
       }
     } else {
-      // Другая ошибка (например, неверный пароль для существующего юзера)
-      setMessage({ type: 'error', text: 'Ошибка: ' + signInError.message })
+      // Если пароль просто неверный для этой почты
+      setMessage({ type: 'error', text: 'Неверный пароль или данные' })
     }
     
     setLoading(false)
