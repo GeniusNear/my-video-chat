@@ -3,7 +3,7 @@ import { useState, useRef, useEffect } from 'react'
 import Image from 'next/image'
 import AudioPlayer from './AudioPlayer'
 
-// --- ТИПЫ (дублируем необходимые) ---
+// --- ТИПЫ ---
 type Profile = { id: string; username: string; avatar_url: string; status: string; }
 type Message = { id: number; created_at: string; content: string; sender_id: string; receiver_id: string; message_type: 'text' | 'file' | 'audio'; file_url?: string; }
 
@@ -17,7 +17,7 @@ type ChatProps = {
   onSendMessage: (text: string) => void;
   onSendFile: (file: File, type: 'file' | 'audio') => void;
   onDeleteMessage: (id: number) => void;
-  onStartCall: (type: 'audio' | 'video') => void;
+  onStartCall: () => void; // <-- Аргумент убран
   onImageClick: (url: string) => void;
 }
 
@@ -25,7 +25,6 @@ export default function Chat({ currentUser, selectedUser, messages, isUploading,
   const [newMessage, setNewMessage] = useState('')
   const [showEmojiPicker, setShowEmojiPicker] = useState(false)
   
-  // Логика записи (перенесена сюда)
   const [isRecording, setIsRecording] = useState(false)
   const [audioLevel, setAudioLevel] = useState(0)
   const [recordedAudio, setRecordedAudio] = useState<{ blob: Blob, url: string } | null>(null)
@@ -41,14 +40,12 @@ export default function Chat({ currentUser, selectedUser, messages, isUploading,
 
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
 
-  // Скролл при наборе текста (опционально)
   const isOnlyEmojis = (text: string) => {
     if (!text) return false;
     const cleanText = text.replace(/\s/g, '');
     return /^(?:[\u2700-\u27bf]|(?:\ud83c[\udde6-\uddff]){2}|[\ud800-\udbff][\udc00-\udfff]|[\u0023-\u0039]\ufe0f?\u20e3|\u3299|\u3297|\u303d|\u3030|\u24c2|\ud83c[\udd70-\udd71]|\ud83c[\udd7e-\udd7f]|\ud83c\udd8e|\ud83c[\udd91-\udd9a]|\ud83c[\udde6-\uddff]|[\ud83c[\ude01-\ude02]|\ud83c\ude1a|\ud83c\ude2f|[\ud83c[\ude32-\ude3a]|[\ud83c[\ude50-\ude51]|\u203c|\u2049|[\u25aa-\u25ab]|\u25b6|\u25c0|[\u25fb-\u25fe]|\u00a9|\u00ae|\u2122|\u2139|\ud83c\udc04|[\u2600-\u26FF]|\u2b05|\u2b06|\u2b07|\u2b1b|\u2b1c|\u2b50|\u2b55|\u231a|\u231b|\u2328|\u23cf|[\u23e9-\u23f3]|[\u23f8-\u23fa]|\ud83c\udccf|\u2934|\u2935|[\u2190-\u21ff])+$/.test(cleanText);
   };
 
-  // --- ЗАПИСЬ ---
   const handleMouseDownRecord = () => { recordingTimerRef.current = setTimeout(() => startRecordingProcess(), 500); };
   const handleMouseUpRecord = () => { if (recordingTimerRef.current) { clearTimeout(recordingTimerRef.current); recordingTimerRef.current = null; } };
   const handleStopClick = () => { if (isRecording && mediaRecorderRef.current) { mediaRecorderRef.current.stop(); setIsRecording(false); } };
@@ -98,7 +95,6 @@ export default function Chat({ currentUser, selectedUser, messages, isUploading,
     }
   }
 
-  // Paste logic
   useEffect(() => {
     const handlePaste = (e: ClipboardEvent) => {
         const items = e.clipboardData?.items; 
@@ -124,8 +120,10 @@ export default function Chat({ currentUser, selectedUser, messages, isUploading,
             <div><h2 className="font-bold text-white">{selectedUser.username}</h2><p className="text-sm text-green-400 font-medium">Онлайн</p></div>
         </div>
         <div className="flex items-center gap-2">
-            <button onClick={() => onStartCall('audio')} className="p-2.5 rounded-full bg-slate-700 hover:bg-slate-600 text-slate-300 transition-all active:scale-90"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.79 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg></button>
-            <button onClick={() => onStartCall('video')} className="p-2.5 rounded-full bg-indigo-600 hover:bg-indigo-500 text-white transition-all active:scale-90 shadow-lg shadow-indigo-500/20"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2" ry="2"/></svg></button>
+            {/* ОДНА КНОПКА ЗВОНКА */}
+            <button onClick={onStartCall} className="p-3 rounded-full bg-indigo-600 hover:bg-indigo-500 text-white transition-all active:scale-95 shadow-lg">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.79 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+            </button>
         </div>
       </header>
 

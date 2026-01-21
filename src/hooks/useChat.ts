@@ -1,8 +1,10 @@
 'use client'
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import { createClient } from '@/lib/supabase'
 import { useRouter } from 'next/navigation'
-import { Profile, Message, Call } from '@/types'
+import { Profile, Message } from '@/types'
+
+const MSG_SOUND_URL = 'https://assets.mixkit.co/active_storage/sfx/2354/2354-preview.mp3';
 
 export const useChat = () => {
   const [users, setUsers] = useState<Profile[]>([])
@@ -15,9 +17,14 @@ export const useChat = () => {
   const router = useRouter()
   const supabase = createClient()
 
-  // Инициализация
+  // Инициализация + Запрос прав на уведомления
   useEffect(() => {
     const init = async () => {
+      // Запрашиваем права на уведомления сразу при входе
+      if (Notification.permission === 'default') {
+        await Notification.requestPermission();
+      }
+
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) { router.push('/login'); return; }
       
@@ -38,7 +45,7 @@ export const useChat = () => {
     init();
   }, [router, supabase]);
 
-  // Загрузка сообщений и подписка
+  // Загрузка сообщений и подписка + ЗВУК + УВЕДОМЛЕНИЯ
   useEffect(() => {
     if (!selectedUser || !currentUser) { setMessages([]); return; }
     localStorage.setItem('lastSelectedUser', selectedUser.id);
@@ -62,10 +69,38 @@ export const useChat = () => {
         .on('postgres_changes', { event: '*', schema: 'public', table: 'messages' }, (payload: any) => {
             if (payload.eventType === 'INSERT') {
                 const m = payload.new as Message;
+                
                 if ((m.sender_id === selectedUser.id && m.receiver_id === currentUser.id) || 
                     (m.sender_id === currentUser.id && m.receiver_id === selectedUser.id)) {
                     setMessages(prev => prev.some(x => x.id === m.id) ? prev : [...prev, m]);
                 }
+
+                // --- ЛОГИКА УВЕДОМЛЕНИЙ ---
+                if (m.receiver_id === currentUser.id) {
+                    // 1. Звук
+                    const audio = new Audio(MSG_SOUND_URL);
+                    audio.volume = 0.5;
+                    audio.play().catch(() => {});
+
+                    // 2. Системное уведомление
+                    if (Notification.permission === 'granted' && document.hidden) {
+                        // Ищем имя отправителя
+                        const sender = users.find(u => u.id === m.sender_id);
+                        const senderName = sender ? sender.username : 'Новое сообщение';
+                        
+                        // Определяем текст уведомления
+                        let bodyText = m.content;
+                        if (m.message_type === 'file') bodyText = '📄 Отправил файл';
+                        if (m.message_type === 'audio') bodyText = '🎤 Голосовое сообщение';
+
+                        new Notification(senderName, {
+                            body: bodyText,
+                            icon: sender?.avatar_url || '/icon.png', // Аватарка или иконка приложения
+                            tag: 'chat-message' // Чтобы не спамить кучей окон, а обновлять одно (опционально)
+                        });
+                    }
+                }
+
             } else if (payload.eventType === 'DELETE') {
                 setMessages(prev => prev.filter(x => x.id !== payload.old.id));
             }
@@ -73,9 +108,8 @@ export const useChat = () => {
         .subscribe();
 
     return () => { supabase.removeChannel(channel); };
-  }, [selectedUser, currentUser, supabase]);
+  }, [selectedUser, currentUser, supabase, users]); // Добавил users в зависимости для поиска имени
 
-  // Методы действий
   const sendMessage = async (text: string) => {
     if (!currentUser || !selectedUser) return;
     await supabase.from('messages').insert({ 
@@ -114,6 +148,6 @@ export const useChat = () => {
     users, currentUser, loading, selectedUser, setSelectedUser,
     messages, isUploading,
     sendMessage, sendFile, deleteMessage, logout,
-    supabase // Экспортируем для WebRTC хука
+    supabase
   };
 }
