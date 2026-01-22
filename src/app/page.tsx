@@ -1,7 +1,7 @@
 ﻿'use client'
 
 import { useEffect, useState } from 'react' 
-import { Call } from '@/types'
+import { Call, Room } from '@/types'
 
 // Компоненты
 import Sidebar from '@/components/Sidebar'
@@ -18,53 +18,56 @@ import { useUnreadMessages } from '@/hooks/useUnreadMessages'
 export default function HomePage() {
   // 1. Подключаем данные чата
   const { 
-    users, currentUser, loading, selectedUser, setSelectedUser, 
+    currentUser, loading, 
+    rooms, selectedRoom, setSelectedRoom, 
+    createPrivateChat, createGroupChat, leaveRoom, updateProfile,
     messages, isUploading, sendMessage, sendFile, deleteMessage, logout, supabase 
   } = useChat();
 
-  // 2. Подключаем "Честный Онлайн" и "Счетчик непрочитанных"
+  // 2. Утилиты
   usePresence(currentUser?.id);
-  const { unreadCounts, markAsRead } = useUnreadMessages(currentUser?.id);
+  const { unreadCounts, markAsRead, resetUnreadCount } = useUnreadMessages(currentUser?.id);
 
-  // 3. Подключаем WebRTC (передаем данные из чата)
+  // 3. WebRTC (Звонки + Стримы)
   const {
     activeCall, setActiveCall,
     isCallModalOpen, setIsCallModalOpen,
     isCallActive, setIsCallActive,
-    myVideoRef, userVideoRef,
+    myVideoRef, userVideoRef, // <-- ТЕПЕРЬ ОНО ТУТ ЕСТЬ
+    localStream, remoteStreams,
     startCall, acceptCall, endCall, rejectCall,
-    toggleMic, toggleCam, isMicOn, isCamOn // <-- НОВЫЕ ФУНКЦИИ
-  } = useWebRTC(currentUser, selectedUser);
+    toggleMic, toggleCam, isMicOn, isCamOn,
+    startScreenShare, stopScreenShare, isScreenSharing
+  } = useWebRTC(currentUser, selectedRoom);
 
-  // 4. Локальные состояния UI (лайтбокс)
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [zoomLevel, setZoomLevel] = useState(1);
 
-  // Эффект для пометки сообщений как прочитанных (с задержкой 1 сек)
+  // --- ЛОГИКА ---
+  
+  const handleSelectRoom = (room: Room) => {
+    setSelectedRoom(room);
+    resetUnreadCount(room.id);
+  };
+
   useEffect(() => {
     let timer: NodeJS.Timeout;
-
-    if (selectedUser && messages.length > 0) {
+    if (selectedRoom && messages.length > 0) {
         const lastMsg = messages[messages.length - 1];
-        
-        // Если последнее сообщение от собеседника, помечаем прочитанным через 1 сек
-        if (lastMsg.sender_id === selectedUser.id) {
+        if (lastMsg.sender_id !== currentUser?.id) {
             timer = setTimeout(() => {
-                markAsRead(selectedUser.id, lastMsg.id);
+                markAsRead(selectedRoom.id, lastMsg.id);
             }, 1000);
         }
     }
-
     return () => clearTimeout(timer);
-  }, [selectedUser, messages, markAsRead]);
+  }, [selectedRoom, messages, markAsRead, currentUser?.id]);
 
-
-  // Подписка на входящие звонки
   useEffect(() => {
     if (!currentUser) return;
     const channel = supabase.channel('global_calls').on('postgres_changes', { event: '*', schema: 'public', table: 'calls' }, (payload: any) => {
        const c = payload.new as Call;
-       if (payload.eventType === 'INSERT' && c.receiver_id === currentUser.id) { 
+       if (payload.eventType === 'INSERT' && c.caller_id !== currentUser.id) { 
            setActiveCall(c); 
            setIsCallModalOpen(true); 
        }
@@ -78,14 +81,27 @@ export default function HomePage() {
        }
     }).subscribe();
     return () => { supabase.removeChannel(channel); };
-  }, [currentUser, activeCall, setActiveCall, setIsCallModalOpen, setIsCallActive, supabase]);
+  }, [currentUser, activeCall, setActiveCall, setIsCallModalOpen, setIsCallActive, supabase, rooms]);
 
-  // Хендлер зума для картинок
   const handleWheel = (e: React.WheelEvent) => {
     e.stopPropagation();
     e.deltaY < 0 ? setZoomLevel(p => Math.min(p + 0.2, 3)) : setZoomLevel(p => Math.max(p - 0.2, 1));
   };
   useEffect(() => { if (!selectedImage) setZoomLevel(1); }, [selectedImage]);
+
+  const handleDeleteMessage = async (id: number) => {
+      if(confirm('Удалить сообщение?')) {
+          await supabase.from('messages').delete().eq('id', id);
+      }
+  }
+
+  const handleToggleScreenShare = () => {
+      if (isScreenSharing) {
+          stopScreenShare();
+      } else {
+          startScreenShare(30, '1080p');
+      }
+  };
 
   if (loading) return <div className="flex h-screen items-center justify-center bg-slate-900 text-white font-bold">Загрузка...</div>
 
@@ -93,41 +109,53 @@ export default function HomePage() {
     <div className="flex h-screen bg-slate-900 text-slate-100 font-sans overflow-hidden">
       <Sidebar 
         currentUser={currentUser} 
-        users={users} 
-        selectedUser={selectedUser} 
+        rooms={rooms}
+        selectedRoom={selectedRoom} 
         unreadCounts={unreadCounts}
-        onSelectUser={setSelectedUser} 
+        onSelectRoom={handleSelectRoom}
+        onCreatePrivateChat={createPrivateChat}
+        onCreateGroup={createGroupChat}
+        onLeaveRoom={leaveRoom}
+        onUpdateProfile={updateProfile}
         onLogout={logout} 
       />
 
       <main className="flex-1 flex flex-col relative h-full min-w-0">
         
-        {/* --- 1. ЭКРАН ЗВОНКА (ВСТРОЕН СЮДА) --- */}
+        {/* Экран звонка */}
         {isCallActive && activeCall && (
-           <div className="flex-shrink-0 z-30">
+           <div className="flex-shrink-0 z-30 shadow-2xl relative">
               <VideoCallScreen 
                  myVideoRef={myVideoRef} 
-                 userVideoRef={userVideoRef} 
+                 userVideoRef={userVideoRef} // Передаем реф (хоть он может быть null в Mesh)
+                 
+                 localStream={localStream}
+                 remoteStreams={remoteStreams}
+                 currentUser={currentUser}
+                 
                  onLeave={endCall}
                  onToggleMic={toggleMic}
                  onToggleCam={toggleCam}
+                 onShareScreen={handleToggleScreenShare}
+                 
                  isMicOn={isMicOn}
                  isCamOn={isCamOn}
+                 isScreenSharing={isScreenSharing}
               />
            </div>
         )}
 
-        {/* --- 2. ЧАТ (ОСТАЛЬНОЕ ПРОСТРАНСТВО) --- */}
-        {selectedUser ? (
+        {/* Чат */}
+        {selectedRoom ? (
           <div className="flex-1 flex flex-col min-h-0 relative">
              <Chat 
                 currentUser={currentUser!}
-                selectedUser={selectedUser}
+                selectedRoom={selectedRoom}
                 messages={messages}
                 isUploading={isUploading}
                 onSendMessage={sendMessage}
                 onSendFile={sendFile}
-                onDeleteMessage={deleteMessage}
+                onDeleteMessage={handleDeleteMessage}
                 onStartCall={startCall}
                 onImageClick={setSelectedImage}
              />
@@ -143,10 +171,17 @@ export default function HomePage() {
         )}
       </main>
 
-      {/* --- МОДАЛКИ (ПОВЕРХ ВСЕГО) --- */}
-      
+      {/* Модалки */}
       {isCallModalOpen && activeCall && !isCallActive && (
-        <CallModal isCaller={activeCall.caller_id === currentUser?.id} type={activeCall.type} onAccept={acceptCall} onReject={rejectCall} />
+        <CallModal 
+            isCaller={activeCall.caller_id === currentUser?.id} 
+            type={activeCall.type} 
+            onAccept={acceptCall} 
+            onReject={rejectCall} 
+            targetUser={
+                activeCall.caller_id === currentUser?.id ? null : null // Можно допилить поиск юзера
+            }
+        />
       )}
       
       {selectedImage && (

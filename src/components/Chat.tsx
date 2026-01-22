@@ -2,49 +2,45 @@
 import { useState, useRef, useEffect } from 'react'
 import Image from 'next/image'
 import AudioPlayer from './AudioPlayer'
-
-// --- ТИПЫ ---
-type Profile = { id: string; username: string; avatar_url: string; status: string; }
-type Message = { id: number; created_at: string; content: string; sender_id: string; receiver_id: string; message_type: 'text' | 'file' | 'audio'; file_url?: string; }
+import { Profile, Message, Room } from '@/types'
 
 const EMOJIS = ['😀', '😂', '😍', '🙌', '👍', '🔥', '✨', '😢', '😡', '🤔', '🎉', '❤️', '😎', '🚀', '👀']
 
 type ChatProps = {
   currentUser: Profile;
-  selectedUser: Profile;
+  selectedRoom: Room; // <-- Теперь Room, а не User
   messages: Message[];
   isUploading: boolean;
   onSendMessage: (text: string) => void;
   onSendFile: (file: File, type: 'file' | 'audio') => void;
   onDeleteMessage: (id: number) => void;
-  onStartCall: () => void; // <-- Аргумент убран
+  onStartCall: () => void;
   onImageClick: (url: string) => void;
 }
 
-export default function Chat({ currentUser, selectedUser, messages, isUploading, onSendMessage, onSendFile, onDeleteMessage, onStartCall, onImageClick }: ChatProps) {
+export default function Chat({ currentUser, selectedRoom, messages, isUploading, onSendMessage, onSendFile, onDeleteMessage, onStartCall, onImageClick }: ChatProps) {
   const [newMessage, setNewMessage] = useState('')
   const [showEmojiPicker, setShowEmojiPicker] = useState(false)
-  
+  const messagesEndRef = useRef<HTMLDivElement | null>(null)
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
+
+  // (Логику записи голоса и paste оставляем той же, я сокращу для краткости)
+  // ... ВСТАВЬ СЮДА ЛОГИКУ ЗАПИСИ (startRecordingProcess и т.д.) ИЗ ПРОШЛОГО РАЗА ...
+  // Или просто скопируй весь файл целиком, если я его дам. Давай дам полный.
+
   const [isRecording, setIsRecording] = useState(false)
   const [audioLevel, setAudioLevel] = useState(0)
   const [recordedAudio, setRecordedAudio] = useState<{ blob: Blob, url: string } | null>(null)
-  
   const recordingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const audioChunksRef = useRef<Blob[]>([])
   const animationFrameRef = useRef<number | null>(null)
   const audioContextRef = useRef<AudioContext | null>(null)
 
-  const messagesEndRef = useRef<HTMLDivElement | null>(null)
-  const fileInputRef = useRef<HTMLInputElement | null>(null)
-
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
 
-  const isOnlyEmojis = (text: string) => {
-    if (!text) return false;
-    const cleanText = text.replace(/\s/g, '');
-    return /^(?:[\u2700-\u27bf]|(?:\ud83c[\udde6-\uddff]){2}|[\ud800-\udbff][\udc00-\udfff]|[\u0023-\u0039]\ufe0f?\u20e3|\u3299|\u3297|\u303d|\u3030|\u24c2|\ud83c[\udd70-\udd71]|\ud83c[\udd7e-\udd7f]|\ud83c\udd8e|\ud83c[\udd91-\udd9a]|\ud83c[\udde6-\uddff]|[\ud83c[\ude01-\ude02]|\ud83c\ude1a|\ud83c\ude2f|[\ud83c[\ude32-\ude3a]|[\ud83c[\ude50-\ude51]|\u203c|\u2049|[\u25aa-\u25ab]|\u25b6|\u25c0|[\u25fb-\u25fe]|\u00a9|\u00ae|\u2122|\u2139|\ud83c\udc04|[\u2600-\u26FF]|\u2b05|\u2b06|\u2b07|\u2b1b|\u2b1c|\u2b50|\u2b55|\u231a|\u231b|\u2328|\u23cf|[\u23e9-\u23f3]|[\u23f8-\u23fa]|\ud83c\udccf|\u2934|\u2935|[\u2190-\u21ff])+$/.test(cleanText);
-  };
+  // Хелперы
+  const isOnlyEmojis = (text: string) => /^(?:[\u2700-\u27bf]|(?:\ud83c[\udde6-\uddff]){2}|[\ud800-\udbff][\udc00-\udfff]|[\u0023-\u0039]\ufe0f?\u20e3|\u3299|\u3297|\u303d|\u3030|\u24c2|\ud83c[\udd70-\udd71]|\ud83c[\udd7e-\udd7f]|\ud83c\udd8e|\ud83c[\udd91-\udd9a]|\ud83c[\udde6-\uddff]|[\ud83c[\ude01-\ude02]|\ud83c\ude1a|\ud83c\ude2f|[\ud83c[\ude32-\ude3a]|[\ud83c[\ude50-\ude51]|\u203c|\u2049|[\u25aa-\u25ab]|\u25b6|\u25c0|[\u25fb-\u25fe]|\u00a9|\u00ae|\u2122|\u2139|\ud83c\udc04|[\u2600-\u26FF]|\u2b05|\u2b06|\u2b07|\u2b1b|\u2b1c|\u2b50|\u2b55|\u231a|\u231b|\u2328|\u23cf|[\u23e9-\u23f3]|[\u23f8-\u23fa]|\ud83c\udccf|\u2934|\u2935|[\u2190-\u21ff])+$/.test(text.replace(/\s/g, ''));
 
   const handleMouseDownRecord = () => { recordingTimerRef.current = setTimeout(() => startRecordingProcess(), 500); };
   const handleMouseUpRecord = () => { if (recordingTimerRef.current) { clearTimeout(recordingTimerRef.current); recordingTimerRef.current = null; } };
@@ -65,7 +61,6 @@ export default function Chat({ currentUser, selectedUser, messages, isUploading,
         if (audioContextRef.current) audioContextRef.current.close();
         setAudioLevel(0);
       };
-      
       const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
       audioContextRef.current = audioContext;
       const analyser = audioContext.createAnalyser();
@@ -110,33 +105,45 @@ export default function Chat({ currentUser, selectedUser, messages, isUploading,
     return () => window.removeEventListener('paste', handlePaste);
   }, [onSendFile]);
 
-
   return (
-    <main className="flex-1 flex flex-col relative h-full">
-      {/* --- HEADER --- */}
+    <main className="flex-1 flex flex-col relative h-full min-w-0">
       <header className="p-4 border-b border-slate-700 flex items-center justify-between bg-slate-800/60 backdrop-blur-md z-20">
         <div className="flex items-center gap-4">
-            <Image src={selectedUser.avatar_url} alt={selectedUser.username} width={40} height={40} className="rounded-full shadow-lg"/>
-            <div><h2 className="font-bold text-white">{selectedUser.username}</h2><p className="text-sm text-green-400 font-medium">Онлайн</p></div>
+            {/* Аватарка комнаты (или заглушка) */}
+            <div className="w-10 h-10 rounded-full bg-indigo-500 flex items-center justify-center text-white text-xl font-bold shadow-lg">
+                {selectedRoom.type === 'group' ? '👥' : '👤'}
+            </div>
+            <div>
+                <h2 className="font-bold text-white">
+                    {selectedRoom.type === 'group' ? selectedRoom.name : 'Личный чат'}
+                </h2>
+                <p className="text-sm text-green-400 font-medium">В сети</p>
+            </div>
         </div>
         <div className="flex items-center gap-2">
-            {/* ОДНА КНОПКА ЗВОНКА */}
             <button onClick={onStartCall} className="p-3 rounded-full bg-indigo-600 hover:bg-indigo-500 text-white transition-all active:scale-95 shadow-lg">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.79 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
             </button>
         </div>
       </header>
 
-      {/* --- MESSAGES --- */}
       <div className="flex-1 p-6 space-y-6 overflow-y-auto scrollbar-thin scrollbar-thumb-slate-700">
         {messages.map(msg => {
             const isMe = msg.sender_id === currentUser.id;
             const onlyEmojis = msg.message_type === 'text' && isOnlyEmojis(msg.content);
+            // Если это группа - показываем имя отправителя (msg.sender - мы его подгружали в хуке useChat)
+            const senderName = msg.sender?.username || 'User'; 
+
             return (
                 <div key={msg.id} className={`flex gap-4 items-start justify-start group relative animate-in slide-in-from-left-2 duration-300 ${isMe ? 'flex-row-reverse' : ''}`}>
-                    <Image src={(isMe ? currentUser.avatar_url : selectedUser.avatar_url) || ''} alt="avatar" width={40} height={40} className="rounded-full bg-slate-700 h-10 w-10 shadow-md"/>
+                    <Image src={msg.sender?.avatar_url || ''} alt="avatar" width={40} height={40} className="rounded-full bg-slate-700 h-10 w-10 shadow-md"/>
+                    
                     <div className="flex flex-col gap-1 max-w-xl">
-                        <div className={`flex items-baseline gap-2 ${isMe ? 'flex-row-reverse' : ''}`}><span className={`text-sm font-bold ${isMe ? 'text-indigo-400' : 'text-slate-300'}`}>{isMe ? currentUser.username : selectedUser.username}</span><span className="text-[10px] text-slate-500 font-mono">{new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span></div>
+                        <div className={`flex items-baseline gap-2 ${isMe ? 'flex-row-reverse' : ''}`}>
+                            <span className={`text-sm font-bold ${isMe ? 'text-indigo-400' : 'text-slate-300'}`}>{isMe ? 'Вы' : senderName}</span>
+                            <span className="text-[10px] text-slate-500 font-mono">{new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                        </div>
+                        
                         <div className={`relative ${onlyEmojis ? "p-0" : `p-3 rounded-2xl rounded-tl-none shadow-md ${isMe ? 'bg-indigo-600/20 border border-indigo-500/30 text-indigo-100' : 'bg-slate-800 border border-slate-700 text-slate-200'}`}`}>
                             {msg.message_type === 'text' && <p className={`${onlyEmojis ? 'text-4xl' : 'text-sm'} leading-relaxed`}>{msg.content}</p>}
                             {msg.message_type === 'file' && msg.file_url && (
@@ -154,7 +161,6 @@ export default function Chat({ currentUser, selectedUser, messages, isUploading,
         <div ref={messagesEndRef} />
       </div>
 
-      {/* --- INPUT --- */}
       <form onSubmit={handleSendText} className="p-4 bg-slate-800/70 backdrop-blur-sm border-t border-slate-700 relative">
         {recordedAudio ? (
             <div className="flex items-center gap-4 w-full bg-slate-700 rounded-full p-2 px-4 animate-in fade-in slide-in-from-bottom-2">

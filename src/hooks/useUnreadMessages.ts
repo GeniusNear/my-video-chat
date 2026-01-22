@@ -16,8 +16,6 @@ export const useUnreadMessages = (userId: string | undefined) => {
       const readMap = new Map(readStatus?.map(r => [r.contact_id, r.last_read_message_id]) || []);
 
       // 2. Получаем ВСЕ сообщения, где получатель = Я
-      // В реальном большом приложении это нужно делать через SQL-функцию (RPC), 
-      // чтобы не грузить тысячи сообщений. Но для старта пойдет так.
       const { data: messages } = await supabase
         .from('messages')
         .select('sender_id, id')
@@ -54,7 +52,13 @@ export const useUnreadMessages = (userId: string | undefined) => {
     return () => { supabase.removeChannel(channel); };
   }, [userId, supabase]);
 
-  // Функция: "Я прочитал чат с этим пользователем"
+  // --- НОВАЯ ФУНКЦИЯ (для исправления ошибки) ---
+  // Просто сбрасываем счетчик визуально при входе в комнату
+  const resetUnreadCount = (contactId: string) => {
+      setUnreadCounts(prev => ({ ...prev, [contactId]: 0 }));
+  };
+
+  // Функция: "Я прочитал чат с этим пользователем" (обнуляет UI + пишет в базу)
   const markAsRead = async (contactId: string, lastMessageId: number) => {
     // Оптимистично обнуляем счетчик в UI
     setUnreadCounts(prev => ({ ...prev, [contactId]: 0 }));
@@ -67,5 +71,6 @@ export const useUnreadMessages = (userId: string | undefined) => {
     }, { onConflict: 'user_id, contact_id' });
   };
 
-  return { unreadCounts, markAsRead };
+  // Не забудь вернуть resetUnreadCount здесь!
+  return { unreadCounts, markAsRead, resetUnreadCount };
 }
