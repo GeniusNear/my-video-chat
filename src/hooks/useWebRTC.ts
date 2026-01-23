@@ -7,21 +7,28 @@ import { Call, Profile, Room } from '@/types'
 const RING_SOUND_URL = 'https://assets.mixkit.co/active_storage/sfx/2060/2060-preview.mp3';
 
 export const useWebRTC = (currentUser: Profile | null, selectedRoom: Room | null) => {
+  // Состояния звонка
   const [activeCall, setActiveCall] = useState<Call | null>(null)
   const [isCallModalOpen, setIsCallModalOpen] = useState(false)
   const [isCallActive, setIsCallActive] = useState(false)
   
+  // Устройства
   const [isMicOn, setIsMicOn] = useState(true)
   const [isCamOn, setIsCamOn] = useState(false)
   const [isScreenSharing, setIsScreenSharing] = useState(false)
 
+  // Потоки
   const [localStream, setLocalStream] = useState<MediaStream | null>(null)
+  // Важно: Map хранит ID пользователя -> Поток
   const [remoteStreams, setRemoteStreams] = useState<Map<string, MediaStream>>(new Map())
   
+  // Рефы
   const myVideoRef = useRef<HTMLVideoElement>(null)
-  const peersRef = useRef<Map<string, Instance>>(new Map()) // ID участника -> Peer
+  const peersRef = useRef<Map<string, Instance>>(new Map()) // ID пользователя -> Peer Connection
   const ringtoneRef = useRef<HTMLAudioElement | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
   const callNotificationRef = useRef<Notification | null>(null);
+  const [voiceVolume, setVoiceVolume] = useState(0);
 
   const supabase = createClient()
 
@@ -29,18 +36,44 @@ export const useWebRTC = (currentUser: Profile | null, selectedRoom: Room | null
   const getMedia = async () => {
     try {
         const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-        stream.getVideoTracks().forEach(t => t.enabled = false); // Старт без видео
-        setStreamState(stream);
+        // По умолчанию видео выключено для старта (как в Discord)
+        stream.getVideoTracks().forEach(t => t.enabled = false);
+        
+        setLocalStream(stream);
+        if (myVideoRef.current) myVideoRef.current.srcObject = stream;
+        
+        // Запускаем анализ голоса (для анимации своей аватарки)
+        setupVoiceAnalyser(stream);
+        
         return stream;
     } catch (e) {
         console.error('Media error:', e);
+        alert('Не удалось получить доступ к камере или микрофону');
         return null;
     }
   };
 
-  const setStreamState = (stream: MediaStream) => {
-      setLocalStream(stream);
-      if (myVideoRef.current) myVideoRef.current.srcObject = stream;
+  const setupVoiceAnalyser = (stream: MediaStream) => {
+      if(audioContextRef.current) return;
+      try {
+          const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+          const analyser = audioContext.createAnalyser();
+          const source = audioContext.createMediaStreamSource(stream);
+          source.connect(analyser);
+          analyser.fftSize = 64;
+          const dataArray = new Uint8Array(analyser.frequencyBinCount);
+          
+          audioContextRef.current = audioContext;
+
+          const checkVolume = () => {
+              if (!analyser) return;
+              analyser.getByteFrequencyData(dataArray);
+              const volume = dataArray.reduce((a, b) => a + b) / dataArray.length;
+              setVoiceVolume(volume);
+              requestAnimationFrame(checkVolume);
+          };
+          checkVolume();
+      } catch(e) { console.error("Audio Analysis Error", e); }
   };
 
   const addSystemMessage = async (text: string) => {
@@ -48,26 +81,30 @@ export const useWebRTC = (currentUser: Profile | null, selectedRoom: Room | null
     await supabase.from('messages').insert({ content: text, sender_id: currentUser.id, room_id: selectedRoom.id, message_type: 'text' });
   };
 
-  // --- СОЗДАНИЕ ПИРА ---
-  const createPeer = async (initiator: boolean, stream: MediaStream, partnerId: string) => {
+  // --- СОЗДАНИЕ ПИРА (Simple-Peer) ---
+  const createPeer = async (initiator: boolean, stream: MediaStream, partnerId: string, signalData?: any) => {
       // @ts-ignore
       const SimplePeer = (await import('simple-peer')).default || (await import('simple-peer'));
       
-      // Создаем пира
       const peer = new SimplePeer({ initiator, trickle: false, stream });
 
-      // Когда пир генерирует сигнал (offer/answer/candidate) -> шлем в БД
       peer.on('signal', async (data: any) => {
+          // Отправляем сигнал конкретному пользователю
           await supabase.from('signals').insert({
               room_id: selectedRoom?.id,
               sender_id: currentUser?.id,
-              receiver_id: partnerId, // Сигнал конкретному юзеру
+              receiver_id: partnerId,
               data: data
           });
       });
 
       peer.on('stream', (remoteStream: MediaStream) => {
           setRemoteStreams(prev => new Map(prev).set(partnerId, remoteStream));
+      });
+
+      peer.on('error', (err: any) => {
+          console.error('Peer error:', err);
+          peersRef.current.delete(partnerId);
       });
 
       peer.on('close', () => {
@@ -79,6 +116,8 @@ export const useWebRTC = (currentUser: Profile | null, selectedRoom: Room | null
           });
       });
 
+      if (signalData) peer.signal(signalData);
+      
       peersRef.current.set(partnerId, peer);
       return peer;
   };
@@ -88,15 +127,15 @@ export const useWebRTC = (currentUser: Profile | null, selectedRoom: Room | null
   const startCall = async () => {
     if (!selectedRoom || !currentUser) return;
     
-    // 1. Включаем интерфейс
     setIsCallActive(true);
     setIsCamOn(false);
     
-    // 2. Получаем медиа
     const stream = await getMedia();
-    if (!stream) return;
+    if (!stream) {
+        setIsCallActive(false);
+        return;
+    }
 
-    // 3. Создаем запись звонка (чтобы у других зазвонило)
     const { data: call } = await supabase.from('calls').insert({
         caller_id: currentUser.id,
         room_id: selectedRoom.id,
@@ -117,30 +156,19 @@ export const useWebRTC = (currentUser: Profile | null, selectedRoom: Room | null
     const stream = await getMedia();
     if (!stream) return;
 
-    // Обновляем статус
     await supabase.from('calls').update({ status: 'accepted' }).eq('id', activeCall.id);
 
-    // В MESH сети инициатор (звонящий) должен начать соединение со мной.
-    // Но так как мы используем trickle: false, нам нужно обменяться сигналами.
-    
-    // Логика:
-    // 1. Я ответил. Я создаю пира (initiator: false) для Звонящего.
-    // 2. Звонящий создает пира (initiator: true) для Меня.
-    // Это сложно синхронизировать.
-    
-    // ПРОСТОЙ ВАРИАНТ (РАБОЧИЙ):
-    // Тот, кто ОТВЕТИЛ (Accept), посылает сигнал "Я готов" (Ready).
-    // Тот, кто ЗВОНИЛ (Caller), видит "Ready" и создает Offer.
-    
+    // Отправляем сигнал READY всем в комнате (точнее, инициатору)
+    // В идеальном Mesh надо слать всем, но пока шлем инициатору
     await supabase.from('signals').insert({
         room_id: selectedRoom.id,
         sender_id: currentUser?.id,
         receiver_id: activeCall.caller_id,
-        data: { type: 'ready' } // Специальный сигнал
+        data: { type: 'ready' }
     });
   };
 
-  // --- ПОДПИСКА НА СИГНАЛЫ ---
+  // --- ПОДПИСКА НА СИГНАЛЫ (HANDSHAKE) ---
   useEffect(() => {
       if (!isCallActive || !selectedRoom || !currentUser || !localStream) return;
 
@@ -149,36 +177,30 @@ export const useWebRTC = (currentUser: Profile | null, selectedRoom: Room | null
         async (payload) => {
             const { sender_id, receiver_id, data } = payload.new;
 
-            // Игнорируем свои сигналы
+            // Игнорируем свои и чужие (не мне адресованные) сигналы
             if (sender_id === currentUser.id) return;
-            // Игнорируем чужие (если это приватный сигнал)
             if (receiver_id && receiver_id !== currentUser.id) return;
 
-            // --- ЛОГИКА СОЕДИНЕНИЯ ---
-            
-            // 1. Если получили "READY" (мы - звонящий, нам ответили)
+            // 1. Получили READY -> Мы инициатор -> Создаем Offer
             if (data.type === 'ready') {
-                // Создаем пира-инициатора
-                await createPeer(true, localStream, sender_id);
+                if (!peersRef.current.has(sender_id)) {
+                    await createPeer(true, localStream, sender_id);
+                }
             }
             
-            // 2. Если получили OFFER (нам звонят)
+            // 2. Получили OFFER -> Мы принимающий -> Создаем Answer
             else if (data.type === 'offer') {
-                // Создаем пира-ответчика (если его нет)
-                const peer = peersRef.current.get(sender_id) || await createPeer(false, localStream, sender_id);
-                peer.signal(data);
+                if (!peersRef.current.has(sender_id)) {
+                    await createPeer(false, localStream, sender_id, data);
+                } else {
+                    peersRef.current.get(sender_id)?.signal(data);
+                }
             }
             
-            // 3. Если получили ANSWER (мы звонили, нам пришел ответ на оффер)
-            else if (data.type === 'answer') {
+            // 3. Получили ANSWER или CANDIDATE -> Просто сигналим существующему пиру
+            else {
                 const peer = peersRef.current.get(sender_id);
                 if (peer) peer.signal(data);
-            }
-            
-            // 4. ICE Candidate (для trickle: true, но мы пока false)
-            else if (data.candidate) {
-                 const peer = peersRef.current.get(sender_id);
-                 if (peer) peer.signal(data);
             }
         })
         .subscribe();
@@ -191,13 +213,17 @@ export const useWebRTC = (currentUser: Profile | null, selectedRoom: Room | null
     setIsCallActive(false);
     setIsCallModalOpen(false);
     
+    // Уничтожаем все соединения
     peersRef.current.forEach(p => p.destroy());
     peersRef.current.clear();
     setRemoteStreams(new Map());
     
+    // Останавливаем локальные треки
     if (localStream) localStream.getTracks().forEach(t => t.stop());
     setLocalStream(null);
+    if(audioContextRef.current) audioContextRef.current.close();
 
+    // Завершаем звонок в БД (если я инициатор)
     if (activeCall && activeCall.caller_id === currentUser?.id) {
         await addSystemMessage('📞 Звонок завершен');
         await supabase.from('calls').update({ status: 'ended' }).eq('id', activeCall.id);
@@ -213,6 +239,7 @@ export const useWebRTC = (currentUser: Profile | null, selectedRoom: Room | null
     setIsCallModalOpen(false);
   };
 
+  // --- УПРАВЛЕНИЕ МЕДИА ---
   const toggleMic = () => {
     if (localStream) {
         localStream.getAudioTracks().forEach(t => t.enabled = !t.enabled);
@@ -227,17 +254,90 @@ export const useWebRTC = (currentUser: Profile | null, selectedRoom: Room | null
     }
   };
 
-  // СТРИМ (Упрощенно)
-  const startScreenShare = async () => { /* ... */ }; // Оставим пока пустым или скопируем старую логику
-  const stopScreenShare = async () => { /* ... */ };
+  const startScreenShare = async (fps = 30, quality = '1080p') => {
+    try {
+        const screenStream = await navigator.mediaDevices.getDisplayMedia({ 
+            video: { width: 1920, height: 1080, frameRate: fps }, 
+            audio: true 
+        });
+        const screenTrack = screenStream.getVideoTracks()[0];
+
+        // Заменяем видео трек у всех пиров
+        peersRef.current.forEach(peer => {
+            // @ts-ignore
+            const sender = peer._pc.getSenders().find((s: any) => s.track.kind === 'video');
+            if (sender) sender.replaceTrack(screenTrack);
+        });
+
+        // Обновляем локальное превью
+        if (myVideoRef.current) myVideoRef.current.srcObject = screenStream;
+        
+        setIsScreenSharing(true);
+        setIsCamOn(true); // Считаем, что "видео" включено (хоть это и экран)
+
+        // Обработка остановки стрима средствами браузера
+        screenTrack.onended = () => stopScreenShare();
+
+    } catch (e) { console.error("Ошибка стрима:", e); }
+  };
+
+  const stopScreenShare = async () => {
+      // Возвращаем камеру
+      const cameraStream = await navigator.mediaDevices.getUserMedia({ video: true });
+      const videoTrack = cameraStream.getVideoTracks()[0];
+
+      peersRef.current.forEach(peer => {
+          // @ts-ignore
+          const sender = peer._pc.getSenders().find((s: any) => s.track.kind === 'video');
+          if (sender) sender.replaceTrack(videoTrack);
+      });
+
+      if (myVideoRef.current) myVideoRef.current.srcObject = cameraStream;
+      setIsScreenSharing(false);
+      // Если камера была выключена до стрима - выключаем трек
+      if (!isCamOn) videoTrack.enabled = false;
+  };
+
+  // Рингтон и уведомления
+  useEffect(() => {
+    if (activeCall?.status === 'ringing' && activeCall.caller_id !== currentUser?.id) {
+        if (!ringtoneRef.current) {
+            ringtoneRef.current = new Audio(RING_SOUND_URL);
+            ringtoneRef.current.loop = true;
+        }
+        ringtoneRef.current.play().catch(() => {});
+
+        if (Notification.permission === 'granted' && !callNotificationRef.current) {
+            const n = new Notification('Входящий звонок!', {
+                body: '📞 Кто-то звонит...',
+                icon: '/icon.png',
+                requireInteraction: true
+            });
+            n.onclick = () => { window.focus(); n.close(); };
+            callNotificationRef.current = n;
+        }
+    } else {
+        if (ringtoneRef.current) {
+            ringtoneRef.current.pause();
+            ringtoneRef.current.currentTime = 0;
+        }
+        if (callNotificationRef.current) {
+            callNotificationRef.current.close();
+            callNotificationRef.current = null;
+        }
+    }
+    return () => { if (ringtoneRef.current) ringtoneRef.current.pause(); };
+  }, [activeCall, currentUser]);
 
   return {
-    activeCall, setActiveCall, isCallModalOpen, setIsCallModalOpen, isCallActive, setIsCallActive,
-    myVideoRef, userVideoRef: null, // Не нужен
+    activeCall, setActiveCall,
+    isCallModalOpen, setIsCallModalOpen,
+    isCallActive, setIsCallActive,
+    myVideoRef, userVideoRef: null,
     localStream, remoteStreams,
     startCall, acceptCall, endCall, rejectCall,
     toggleMic, toggleCam, isMicOn, isCamOn,
     startScreenShare, stopScreenShare, isScreenSharing,
-    voiceVolume: 0 // Пока заглушка
+    voiceVolume
   };
 }
