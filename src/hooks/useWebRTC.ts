@@ -24,6 +24,7 @@ export const useWebRTC = (currentUser: Profile | null, selectedRoom: Room | null
   
   // Рефы
   const myVideoRef = useRef<HTMLVideoElement>(null)
+  const userVideoRef = useRef<HTMLVideoElement>(null)
   const peersRef = useRef<Map<string, Instance>>(new Map()) // ID пользователя -> Peer Connection
   const ringtoneRef = useRef<HTMLAudioElement | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);

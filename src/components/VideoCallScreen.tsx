@@ -5,7 +5,7 @@ import { Profile } from '@/types'
 
 type VideoCallScreenProps = {
   myVideoRef: React.RefObject<HTMLVideoElement | null>;
-  userVideoRef: React.RefObject<HTMLVideoElement | null>;
+  userVideoRef?: React.RefObject<HTMLVideoElement | null> | null;
   localStream: MediaStream | null;
   remoteStreams: Map<string, MediaStream>; 
   currentUser: Profile | null;
